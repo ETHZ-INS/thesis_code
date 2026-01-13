@@ -1,0 +1,306 @@
+---
+title: "Motif Stats"
+output: html_document
+date: "2025-10-15"
+---
+
+```{r setup}
+library(data.table)
+library(universalmotif)
+library(ggplot2)
+library(ggrepel)
+library(ggseqlogo)
+library(viridis)
+library(patchwork)
+library(RColorBrewer)
+
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", 
+                "#009E73", "#F0E442", "#0072B2", 
+                "#D55E00", "#CC79A7")
+```
+
+```{r}
+tfClass <- fread("H13CORE/hocomoco13_tfs.tsv")
+tfClass <- as.data.frame(tfClass[!grepl("MOUSE",tfClass$`curated:uniprot_id`),])
+tfClass <- as.data.table(tfClass)
+subSuperClass <- c("Zinc-coordinating DNA-binding domains",
+                   "Helix-turn-helix domains")
+subClass <- c("C2H2 zinc finger factors",
+              "Homeo domain factors")
+
+# choose super classes to display ----------------------------------------------
+
+setorder(tfClass, `tfclass:superclass`)
+tfClass[,superclass:=fifelse(`tfclass:superclass` %in% subSuperClass, 
+                                  `tfclass:superclass`, "other superclasses")]
+tfClass[,superclass:=factor(superclass, ordered=TRUE, 
+                            levels=c(subSuperClass, "other superclasses"))]
+
+# choose classes to display ----------------------------------------------------
+
+tfClass[,class:=fifelse(superclass=="Zinc-coordinating DNA-binding domains" & 
+                        `tfclass:class`!="C2H2 zinc finger factors", 
+                        "2.x",`tfclass:class`)]
+tfClass[,class:=fifelse(superclass=="Helix-turn-helix domains" & 
+                        `tfclass:class`!="Homeo domain factors", 
+                        "3.x",class)]
+tfClass[,class:=factor(class, ordered=TRUE, 
+                       levels=c("C2H2 zinc finger factors", "2.x", 
+                                "Homeo domain factors", "3.x",
+                                setdiff(unique(tfClass$class), 
+                                        c("C2H2 zinc finger factors", 
+                                          "2.x",
+                                          "Homeo domain factors", 
+                                          "3.x"))))]
+
+# choose families to display ---------------------------------------------------
+
+tfClass[,family:=fifelse(class=="C2H2 zinc finger factors" & 
+                         `tfclass:family`!="More than 3 adjacent zinc fingers", 
+                         "2.3.x",
+                         `tfclass:family`)]
+tfClass[,family:=fifelse(class=="Homeo domain factors" & 
+                         `tfclass:family`!="HOX-related", 
+                         "3.1.x",
+                         family)]
+tfClass[,family:=factor(family, ordered=TRUE, 
+                        levels=c("More than 3 adjacent zinc fingers", "2.3.x", 
+                                 "HOX-related", "3.1.x",
+                                 setdiff(unique(tfClass$family), 
+                                         c("More than 3 adjacent zinc fingers", 
+                                           "2.3.x",
+                                           "HOX-related", 
+                                           "3.1.x"))))]
+
+# choose subfamilies to display ------------------------------------------------
+
+tfClass[,subfamily:=fifelse(family=="More than 3 adjacent zinc fingers" & 
+                            `tfclass:subfamily`!="ZNF763-like", 
+                            "2.3.3.x" , `tfclass:subfamily`)]
+tfClass[,subfamily:=fifelse(family=="HOX-related" & 
+                            `tfclass:subfamily`!="HOX9-13", 
+                            "3.1.1.x" , subfamily)]
+tfClass[,subfamily:=factor(subfamily, ordered=TRUE, 
+                        levels=c("ZNF763-like", "2.3.3.x", 
+                                 "HOX9-13", "3.1.1.x",
+                                 setdiff(unique(tfClass$subfamily), 
+                                         c("ZNF763-like", "2.3.3.x", 
+                                           "HOX9-13", "3.1.1.x"))))]
+
+# choose tf name ---------------------------------------------------------------
+
+tfClass[,tfid:=fifelse(subfamily=="ZNF763-like" & 
+                            `tfclass:id`!="2.3.3.33.1", 
+                             "2.3.3.33.x" , `tfclass:id`)]
+tfClass[,tfid:=fifelse(subfamily=="HOX9-13" & 
+                            `tfclass:id`!="3.1.1.8.1", 
+                       "3.1.1.8.x" , tfid)]
+tfClass[,tfid:=factor(tfid, ordered=TRUE, 
+                      levels=c("2.3.3.33.1", "2.3.3.33.x", 
+                               "3.1.1.8.1", "3.1.1.8.x",
+                               setdiff(unique(tfClass$tfid), 
+                                       c("2.3.3.33.1", "2.3.3.33.x", 
+                                         "3.1.1.8.1", "3.1.1.8.x"))))]
+
+setorder(tfClass, superclass, class, family, subfamily, tfid)
+```
+
+
+```{r}
+leafs <- tfClass[,.(w=.N), by=.(superclass, class, family, subfamily, tfid)]
+setorder(leafs, superclass, class, family, subfamily, tfid)
+library(data.table)
+library(dplyr)
+library(igraph)
+library(ggraph)
+library(stringr)
+
+# Orders from factor levels
+super_order  <- levels(leafs$superclass)
+class_order  <- levels(leafs$class)
+family_order <- levels(leafs$family)
+subfamily_order <- levels(leafs$subfamily)
+tfid_order <- levels(leafs$tfid)
+
+# Edges in factor order
+edges_sc <- leafs[order(superclass, class),
+                  .(from = as.character(superclass), to = as.character(class))] |>
+  unique()
+
+edges_cf <- leafs[order(superclass, class, family),
+                  .(from = as.character(class), to = as.character(family))] |>
+  unique()
+
+edges_fs <- leafs[order(superclass, class, family, subfamily),
+                  .(from = as.character(family), to = as.character(subfamily))] |>
+  unique()
+edges_si <- leafs[order(superclass, class, family, subfamily, tfid),
+                  .(from = as.character(subfamily), to = as.character(tfid))] |>
+  unique()
+
+edges <- dplyr::bind_rows(
+  tibble::tibble(from = "_ROOT_", to = super_order),  # root -> superclasses (in order)
+  tibble::as_tibble(edges_sc),                        # superclass -> class
+  tibble::as_tibble(edges_cf),                         # class -> family
+  tibble::as_tibble(edges_fs),
+  tibble::as_tibble(edges_si)
+)
+
+# Vertex list in desired sibling order: root, superclasses, classes, families
+vertex_names <- c("_ROOT_", super_order, class_order, 
+                  family_order, subfamily_order, tfid_order) |> unique()
+
+# Weights only on leaves (families); others = 0
+nodes <- tibble::tibble(name = vertex_names) %>%
+  left_join(
+    leafs[, .(name = as.character(tfid), weight = sum(w)), by = tfid] |> as_tibble(),
+    by = "name"
+  ) %>%
+  mutate(weight = ifelse(is.na(weight), 0, weight))
+
+subLevels <- c(levels(leafs$superclass)[1:3],
+               levels(leafs$class)[1:4],
+               levels(leafs$family)[1:4],
+               levels(leafs$subfamily)[1:4],
+               levels(leafs$tfid)[1:4], # c("2.3.3.33.x", "3.1.1.8.x")
+               "_ROOT_")
+edges <- subset(edges, from %in% subLevels &
+                       to %in% subLevels)
+nodes <- subset(nodes, name %in% subLevels)
+leafs
+
+nodeWeights <- lapply(nodes$name, function(n){
+  sum(leafs[leafs[, Reduce(`|`, lapply(.SD, function(x) x == n))]]$w)
+})
+nodes$weight <- unlist(nodeWeights)
+
+# Graph and layout
+g <- graph_from_data_frame(edges, vertices = nodes, directed = TRUE)
+```
+
+```{r}
+lay <- create_layout(g, layout = "partition", weight = unlist(nodeWeights))
+
+# drop root
+lay_plot <- lay %>% filter(depth > 0)
+lay_plot <- as.data.table(lay_plot)
+lay_plot[,color:=fifelse(name %in% unique(unlist(subset(tfClass, superclass=="Zinc-coordinating DNA-binding domains")[,c("class", "superclass", "family", "subfamily", "tfid")])), 
+                         "#E69F00", "#009E73")]
+lay_plot[,color:=fifelse(name %in% unique(unlist(subset(tfClass, superclass=="Helix-turn-helix domains")[,c("class", "superclass", "family", "subfamily", "tfid")])), 
+                         "#56B4E9", color)]
+
+
+
+lay_plot[,cum_width:=cumsum(width), by=depth]
+lay_plot[,cum_width_ontology:=cumsum(width), by=.(depth, color)]
+# this has to be computed differently
+lay_plot[,x_center:=width/2+data.table::shift(cum_width, n=1, type="lag"), by=depth]
+lay_plot[,x_center:=fifelse(depth>2 & color=="#56B4E9", 
+                            cum_width_ontology-(width/2)+subset(lay_plot, name=="Zinc-coordinating DNA-binding domains")$width, 
+                            x_center), by=.(color)]
+lay_plot[,x_center:=fifelse(is.na(x_center), cum_width_ontology/2, x_center)]
+lay_plot[,y_center:=y+height/2]
+lay_plot[,alpha:=1-0.6*str_count(as.character(name), fixed(".x"))]
+
+#lay_plot <- subset(lay_plot, color=="#E69F00" | 
+#                             name %in% c("Helix-turn-helix domains", 
+#                                         "other superclasses"))
+
+# deepest depth = classes
+deep_depth <- max(lay_plot$depth)
+class_tiles <- lay_plot %>%
+  filter(depth == deep_depth) %>%
+  arrange(x) %>%
+  mutate(count = weight,
+         cum_count = cumsum(count),
+         boundary_x = x + width)
+
+# y-axis labels by depth centers
+depth_levels <- sort(unique(lay_plot$depth))
+depth_centers <- lay_plot %>%
+  group_by(depth) %>%
+  summarise(y_break = mean(y + height/2), .groups = "drop")
+depth_labels <- setNames(c("superclass","class", "family", "subfamily", "tfid")[seq_along(depth_levels)],
+                         depth_levels)
+
+lay_plot[,name_disp:=fifelse(name=="Zinc-coordinating DNA-binding domains", 
+                             "Zinc-coordinating DNA-binding domains\n superclass: 2",
+                             name)]
+lay_plot[,name_disp:=fifelse(name=="Helix-turn-helix domains", 
+                             "Helix-turn-helix domains\n superclass: 3",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="other superclasses", 
+                             "other superclasses\n superclass: X",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="C2H2 zinc finger factors", 
+                             "C2H2 zinc finger factors\n class: 2.3",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="Homeo domain factors", 
+                             "Homeo domain factors\n class: 3.1",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="More than 3 adjacent zinc fingers", 
+                             "More than 3 adjacent zinc fingers\n family: 2.3.3",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="HOX-related", 
+                             "HOX-related\n family: 3.1.1",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="ZNF763-like", 
+                             "ZNF763-like\n subfamily: 2.3.3.33",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="HOX9-13", 
+                             "HOX9-13\n subfamily: 3.1.1.8",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="2.3.3.33.1", 
+                             "ZNF763\n TF id: 2.3.3.33.1",
+                             name_disp)]
+lay_plot[,name_disp:=fifelse(name=="3.1.1.8.1", 
+                             "HOXA9\n TF id: 3.1.1.8.1",
+                             name_disp)]
+lay_plot <- subset(lay_plot, !grepl(".x", name_disp, fixed=TRUE))
+
+rownames(lay_plot) <- lay_plot$name
+ggplot(lay_plot) +
+  geom_node_tile(aes(x = x, y = y, width = width, height = height,
+                     fill = color, alpha=alpha),
+                 colour = "white", linewidth = 0.3) +
+ geom_node_tile(data=subset(lay_plot, name %in% c("3.1.1.8.1", "2.3.3.33.1")),
+                aes(x = x, y = y, width = width, height = height,
+                     fill = color, alpha=alpha, color=color)) +
+  geom_label(data = subset(lay_plot, depth == 1),
+            aes(x = x_center, y = y_center-0.5, label = name_disp), size = 3,
+            direction = "x") +
+ geom_label(data = subset(lay_plot, depth == 2),
+            aes(x = x_center, y = y_center-0.5, label = name_disp), size = 2.6,
+            direction = "x") +
+  geom_label(data = subset(lay_plot, depth == 3),
+            aes(x = x_center, y = y_center-0.5, label = name_disp), size = 2.6,
+            direction = "x") +
+  geom_label_repel(data = subset(lay_plot, depth == 4),
+            aes(x = x_center, y = y_center-0.5, label = name_disp), size = 2.6,
+            min.segment.length = 0) +
+  geom_label_repel(data = subset(lay_plot, depth == deep_depth),
+                   aes(x = x_center, y = y_center-0.5, label = name_disp), 
+                   size = 2.6,
+                   min.segment.length = 0) +
+  scale_alpha_identity()+
+  scale_fill_identity()+
+  scale_color_identity()+
+  scale_y_reverse(
+    name = NULL,
+    breaks = rev(depth_centers$y_break-0.5),
+    labels = sub("tfid","TF id", rev(depth_labels[as.character(depth_levels)])),
+    expand = c(0, 0)
+  ) +
+  xlab("Cumulative sum of unique TF ids")+
+  theme_minimal() +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        axis.ticks.y = element_blank())
+ggsave("tfClass.png", width=25, units="cm", height=12, dpi=500)
+ggsave("tfClass.pdf", width=25, units="cm", height=12, dpi=150)
+ggsave("tfClass.svg", width=25, units="cm", height=12)
+```
+
+```{r}
+sessionInfo()
+```

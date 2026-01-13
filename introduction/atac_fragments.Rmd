@@ -1,0 +1,78 @@
+---
+title: "atac fragments"
+output: html_document
+---
+
+```{r setup}
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(viridis)
+library(patchwork)
+library(RColorBrewer)
+library(rtracklayer)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", 
+                "#009E73", "#F0E442", "#0072B2", 
+                "#D55E00", "#CC79A7")
+library(TFBlearner)
+```
+
+
+```{r, fragment length distribution}
+# Exp: GSE64373
+# Samples: GSM3905874,GSM3905875,GSM4133299,
+#          GSM4133300,GSM2902624,GSM2902625,GSM2902626,
+#          GSM2902627, GSM5743943,GSM5743942
+# overlapped with PREs.
+frags <- readRDS("fragment_data/fragsInDhs.rds")
+fragDt <- data.table(w=width(frags))
+
+p1 <- ggplot(fragDt[sample(1:nrow(fragDt), 1e5),], aes(x=w))+
+      geom_histogram(bins=100, color="black", 
+                     fill="lightgray", 
+                     alpha=0.6,
+                     aes(y = after_stat(count / sum(count))))+
+      scale_fill_viridis(option="D")+
+      xlim(c(0,1000))+
+      labs(x="Fragment length", tag="A", 
+           y="Proportion of total fragments")+
+      theme_minimal()+
+      theme(plot.tag = element_text(size = 16, face = "bold"))
+p1
+```
+
+```{r, footprint}
+refCoords <- readRDS("fragment_data/hybrid.custom.hg38.resized.resplit.rds")
+pfm1 <- universalmotif::read_matrix("./H13CORE/pfm/CEBPB.H13CORE.0.P.B.pfm", 
+                                    positions="rows")
+mm <- list(pfm1)
+names(mm) <- "CEBPB"
+mo <- TFBlearner::prepMotifs(refCoords, motifs=mm, 
+                             genome=BSgenome.Hsapiens.UCSC.hg38, 
+                             outputFolder="fragment_data")
+mo <- readRDS(mo)
+ips <- getInsertionProfiles(list("sample_merged"=frags), 
+                            mo, 
+                            shift=TRUE, 
+                            subSample=1e6)
+ips <- ips$insertProfiles
+ips[,prop:=pos_count_global/sum(pos_count_global)]
+p2 <- ggplot(ips, aes(x=rel_pos, y=prop))+
+      geom_line(color="darkgrey")+
+      labs(x="Positions relative to the center of the motif match",
+           y="Proportion of total insertions",
+           tags="B")+
+      theme_minimal()+
+      theme(plot.tag = element_text(size = 16, face = "bold"))
+p2
+```
+
+```{r, combined plot}
+p1+p2
+ggsave("atac_fragments.svg", width=24, height=10, units="cm", dpi=150)
+ggsave("atac_fragments.png", width=24, height=10, units="cm", dpi=150)
+ggsave("atac_fragments.pdf", width=24, height=10, units="cm", dpi=150)
+ggsave("atac_fragments_hq.png", width=24, height=10, units="cm", dpi=300)
+```

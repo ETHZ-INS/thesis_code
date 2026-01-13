@@ -1,0 +1,406 @@
+---
+title: "Motif Stats"
+output: html_document
+date: "2025-10-15"
+---
+
+```{r setup}
+library(data.table)
+library(universalmotif)
+library(ggplot2)
+library(ggrepel)
+library(ggseqlogo)
+library(viridis)
+library(patchwork)
+library(RColorBrewer)
+
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", 
+                "#009E73", "#F0E442", "#0072B2", 
+                "#D55E00", "#CC79A7")
+```
+
+Code used for stats in section 1.1.2 - DNA binding.
+
+# HOCOMOCO
+
+```{r, homomoco motifs numbers}
+hocMots <- fread("H13CORE_motifs.tsv")
+hocMots <- subset(hocMots, grepl("_HUMAN", `UniProt ID (human)`))
+
+nTfs <- length(unique(hocMots$`Gene (human)`))
+nHqTfs <- length(unique(subset(hocMots, Quality %in% c("A", "B"))$`Gene (human)`))
+
+nTfs-nHqTfs
+```
+
+```{r, hocomoco motif length}
+hqMots <- subset(hocMots, Quality %in% c("A", "B"))
+agHgMots <- hqMots[,max_length:=max(`Motif length`), by=`Gene (human)`]
+nrow(subset(agHgMots,`Motif length` <=10))
+length(unique(subset(agHgMots,`Motif length` <=10)$`Gene (human)`))
+
+agAllMots <- hocMots[,max_length:=max(`Motif length`), by=`Gene (human)`]
+nrow(subset(agAllMots,`Motif length` <=10))
+length(unique(subset(agAllMots,`Motif length` <=10)$`Gene (human)`))
+
+nrow(subset(agAllMots,`Motif length` <=8))
+length(unique(subset(agAllMots,`Motif length` <=8)$`Gene (human)`))
+```
+
+```{r, hocomoco motif information content sum}
+# wget https://hocomoco13.autosome.org/final_bundle/hocomoco13/H13CORE/H13CORE_pwm.tar.gz
+icmDts <- list()
+
+# using their reported IC
+pwmsPaths <- list.files("H13CORE/pwm", full.names=TRUE, recursive=TRUE)
+for(pwmPath in pwmsPaths){
+  am <- universalmotif::read_matrix(pwmPath, positions="rows")
+  
+  # TODO: compute ICM 
+  icmDts[[am@name]] <- data.table(IC_sum=am@icscore, 
+                                  motif_length=ncol(am@motif))
+}
+
+# using manually computed IC (check difference pfm, pcm HOCOMOCO)
+icmReDts <- list()
+pwmsPaths <- list.files("H13CORE/pcm", full.names=TRUE, recursive=TRUE)
+
+icmDt <- rbindlist(icmDts, idcol="motif_name")
+icmDt[,median_ic_sum:=median(IC_sum), by=motif_length]
+icmDt[,gene:=tstrsplit(motif_name, split=".", fixed=TRUE, keep=1)]
+icmDt[,gene:=gsub(">", "", gene)]
+icmDt[,rank:=frank(IC_sum)]
+
+icmDt[, motif_name:=gsub(">", "", motif_name)]
+icmAgDt <- subset(icmDt, motif_name %in% hqMots$Motif) # TODO: Double check this again
+icmAgDt <- icmAgDt[,.(IC_sum=max(IC_sum)),by=gene]
+icmAgDt[,rank:=frank(IC_sum)]
+median(icmAgDt$IC_sum)
+nrow(subset(icmAgDt, IC_sum<=10))
+
+quantile(icmAgDt$IC_sum, 0.9)
+
+
+icmAgDt <- subset(icmDt, motif_name %in% hocMots$Motif) # TODO: Double check this again
+icmAgDt <- icmAgDt[,.(IC_sum=max(IC_sum)),by=gene]
+icmAgDt[,rank:=frank(IC_sum)]
+median(icmAgDt$IC_sum)
+nrow(subset(icmAgDt, IC_sum<=10))
+
+quantile(icmAgDt$IC_sum, 0.9)
+```
+
+
+```{r, ICM plots}
+p1 <- ggplot(icmDt, aes(x=rank, y=IC_sum, color=motif_length))+
+  scale_color_viridis(option="B")+
+  geom_point(size=2)+
+  geom_hline(yintercept=quantile(icmDt$IC_sum, 0.5), linetype="dashed")+
+  geom_label_repel(data=subset(icmDt, motif_name %in% c(">SOX15.H13CORE.0.P.B",
+                                                        ">ATF2.H13CORE.1.P.B")), 
+                   aes(label=gene, x=rank, y=IC_sum),
+                   nudge_y = 10,
+                   nudge_x = -3,
+                   direction = "both",
+                   #box.padding = 0.35,
+                   #point.padding = 0.6,
+                   force_pull =-10)+
+  labs(x="Rank", y="Total IC (Bits)", tag="A", color="Motif length")+
+  theme_minimal()
+p1
+p2 <- ggplot(icmDt, aes(x=motif_length, group=motif_length, fill=median_ic_sum))+
+  geom_bar()+
+  geom_vline(xintercept=median(icmDt$motif_length), linetype="dashed")+
+  scale_fill_viridis(option="D")+
+  labs(x="Motif length", tag="B", fill="Median Total IC (Bits)")+
+  theme_minimal()
+p1+p2
+
+ggsave("total_ic.svg", width=24, height=10, units="cm")
+```
+
+```{r, motif sequence logos}
+icmAgDt <- icmDt[,.(IC_sum=max(IC_sum)),by=gene]
+icmAgDt[,rank:=frank(IC_sum)]
+ggplot(icmAgDt, aes(x=rank, y=IC_sum))+
+  geom_point(size=2)+
+  theme_minimal()
+
+setorder(icmAgDt, IC_sum)
+head(icmAgDt, 10)
+subset(icmDt, gene=="MAD4")
+subset(icmDt, gene=="SOX15")
+
+setorder(icmAgDt, -IC_sum)
+head(icmAgDt, 10)
+
+pfm1 <- universalmotif::read_matrix("./H13CORE/pfm/ATF2.H13CORE.1.P.B.pfm", positions="rows")
+pfm1 <- pfm1@motif
+pwmSpec <- as.matrix(pfm1)
+colnames(pwmSpec) <- c(paste0("pos", 1:(ncol(pwmSpec))))
+rownames(pwmSpec) <- rownames(pfm1)
+
+maxLen <- ncol(pwmSpec)+0.5
+seqLog1 <- ggseqlogo(pwmSpec, method = "bits") +
+         scale_x_continuous(limits = c(1, maxLen), breaks =1:maxLen)+
+         theme_minimal() +
+         scale_fill_manual(values=cbbPalette)+
+         labs(title="ATF2", 
+              x="Position", 
+              y="IC (Bits)")
+
+pfm2 <- universalmotif::read_matrix("./H13CORE/pfm/SOX15.H13CORE.0.P.B.pfm", positions="rows")
+pfm2 <- pfm2@motif
+pwmSpec <- as.matrix(pfm2)
+colnames(pwmSpec) <- c(paste0("pos", 1:(ncol(pwmSpec))))
+rownames(pwmSpec) <- rownames(pfm2)
+cutAt <- ncol(pwmSpec)
+seqLog2 <- ggseqlogo(pwmSpec, method = "bits") +
+         scale_fill_manual(values=cbbPalette)+
+         scale_x_continuous(limits = c(1, maxLen), breaks = 1:maxLen,
+                     labels = function(x) ifelse(x <= cutAt, as.character(x), "")) +
+         annotate("rect", xmin = cutAt+0.5, xmax = maxLen, ymin = -Inf, ymax = Inf,
+                   fill = "white", alpha=1, inherit.aes = FALSE) +
+         labs(title="SOX15", 
+              x="Position", 
+              y="IC (Bits)")+
+         theme_minimal()
+seqLog1 / seqLog2
+ggsave("seq_logos.svg", width=24, height=10, units="cm")
+```
+
+```{r}
+# example matrix
+pwm1 <- universalmotif::read_matrix("./H13CORE/pwm/ATF2.H13CORE.1.P.B.pwm", positions="rows")
+pwm1Dt <- as.data.table(pwm1@motif, keep.rownames=TRUE)
+colnames(pwm1Dt) <- c("nucleotide", 1:(ncol(pwm1Dt)-1))
+pwm1Dt <- melt(pwm1Dt, id.vars="nucleotide", variable.name="position", value="pw")
+pwm1Dt[,nucleotide:=factor(nucleotide, 
+                          levels=c("T", "G", "C", "A"), 
+                          ordered=TRUE)]
+pwm1Dt[,position:=as.numeric(pwm1Dt$position)]
+pwm2 <- universalmotif::read_matrix("./H13CORE/pwm/SOX15.H13CORE.0.P.B.pwm", positions="rows")
+pwm2Dt <- as.data.table(pwm2@motif, keep.rownames=TRUE)
+colnames(pwm2Dt) <- c("nucleotide", 1:(ncol(pwm2Dt)-1))
+pwm2Dt <- melt(pwm2Dt, id.vars="nucleotide", variable.name="position", value="pw")
+pwm2Dt[,nucleotide:=factor(nucleotide, 
+                          levels=c("T", "G", "C", "A"), 
+                          ordered=TRUE)]
+pwm2Dt[,position:=as.numeric(pwm2Dt$position)]
+pwmMin <- min(c(pwm2Dt$pw, pwm1Dt$pw))
+pwmMax <- max(c(pwm2Dt$pw, pwm1Dt$pw))
+
+pwm1 <- ggplot(pwm1Dt, aes(x = position, y = nucleotide, fill = pw)) +
+  geom_tile(alpha = 0.2) +
+  coord_fixed() +
+  geom_text(aes(label = sprintf("%.2f", pw)), size = 3) +
+  scale_x_continuous(
+    limits = c(0, maxLen),
+    breaks = 1:maxLen,
+    labels = function(x) ifelse(x <= cutAt, as.character(x), ""),
+    expand = c(0, 0)) +
+  
+  scale_y_discrete(expand = c(0, 0))+
+  #scale_fill_distiller(palette="RdBu", direction=1, limits=c(pwmMin,pwmMax)) +
+  scale_fill_gradient2(
+    low  = "red",
+    mid  = "white",
+    high = "blue",
+    midpoint = 0,
+    limits = c(pwmMin, pwmMax),
+    #oob = scales::squish,    # keeps values inside limits
+    name = "pw"
+  )+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.text.y = element_text(margin = ggplot2::margin(r = -10)))
+
+pwm2 <- ggplot(pwm2Dt, aes(x = position, y = nucleotide, fill = pw)) +
+  geom_tile(alpha = 0.2) +
+  coord_fixed() +
+  geom_text(aes(label = sprintf("%.2f", pw)), size = 3) +
+  scale_x_continuous(
+    limits = c(0, maxLen),
+    breaks = 1:maxLen,
+    labels = function(x) ifelse(x <= cutAt, as.character(x), ""),
+    expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0))+
+  scale_fill_gradient2(
+    low  = "red",
+    mid  = "white",
+    high = "blue",
+    midpoint = 0,
+    limits = c(pwmMin, pwmMax),
+    #oob = scales::squish,    # keeps values inside limits
+    name = "pw"
+  )+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.text.y = element_text(margin = ggplot2::margin(r = -10)))
+(pwm1 + seqLog1) / (pwm2 + seqLog2)
+```
+```{r}
+ppm1 <- universalmotif::read_matrix("./H13CORE/pfm/ATF2.H13CORE.1.P.B.pfm", positions="rows")
+ppm1Dt <- as.data.table(ppm1@motif, keep.rownames=TRUE)
+colnames(ppm1Dt) <- c("nucleotide", 1:(ncol(ppm1Dt)-1))
+ppm1Dt <- melt(ppm1Dt, id.vars="nucleotide", variable.name="position", value="pw")
+ppm1Dt[,nucleotide:=factor(nucleotide, 
+                          levels=c("T", "G", "C", "A"), 
+                          ordered=TRUE)]
+ppm1Dt[,position:=as.numeric(ppm1Dt$position)]
+ppm2 <- universalmotif::read_matrix("./H13CORE/pfm/SOX15.H13CORE.0.P.B.pfm", positions="rows")
+ppm2Dt <- as.data.table(ppm2@motif, keep.rownames=TRUE)
+colnames(ppm2Dt) <- c("nucleotide", 1:(ncol(ppm2Dt)-1))
+ppm2Dt <- melt(ppm2Dt, id.vars="nucleotide", variable.name="position", value="pw")
+ppm2Dt[,nucleotide:=factor(nucleotide, 
+                          levels=c("T", "G", "C", "A"), 
+                          ordered=TRUE)]
+ppm2Dt[,position:=as.numeric(pwm2Dt$position)]
+pwmMin <- min(c(ppm2Dt$pw, ppm1Dt$pw))
+pwmMax <- max(c(ppm2Dt$pw, ppm1Dt$pw))
+
+ppm1 <- ggplot(ppm1Dt, aes(x = position, y = nucleotide, fill = pw)) +
+  geom_tile(alpha = 0.2) +
+  coord_fixed() +
+  geom_text(aes(label = sprintf("%.2f", pw)), size = 3) +
+  scale_x_continuous(
+    limits = c(0, maxLen),
+    breaks = 1:maxLen,
+    labels = function(x) ifelse(x <= cutAt, as.character(x), ""),
+    expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0))+
+  scale_fill_distiller(palette="Blues", direction=1, limits=c(pwmMin,pwmMax)) +
+  labs(title="p(k|r)")+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.y = element_blank(),
+    plot.title=element_text(face="italic", size=9),
+    legend.position = "none",
+    axis.text.y = element_text(margin = ggplot2::margin(r = -10)))
+
+
+library(ggtext)
+ppm2 <- ggplot(ppm2Dt, aes(x = position, y = nucleotide, fill = pw)) +
+  geom_tile(alpha = 0.2) +
+  coord_fixed() +
+  geom_text(aes(label = sprintf("%.2f", pw)), size = 3) +
+  scale_x_continuous(
+    limits = c(0, maxLen),
+    breaks = 1:maxLen,
+    labels = function(x) ifelse(x <= cutAt, as.character(x), ""),
+    expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0))+
+  scale_fill_distiller(palette="Blues", direction=1, limits=c(pwmMin,pwmMax)) +
+  labs(title="p(k|r)")+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.y = element_blank(),
+    plot.title=element_text(face="italic", size=9),
+    legend.position = "none",
+    axis.text.y = element_text(margin = ggplot2::margin(r = -10)))
+(seqLog1 + ppm1) / (seqLog2 + ppm2)
+ggsave("seq_logos.svg", width=24, height=10, units="cm")
+```
+```{r, IC by family}
+tfAnnot <- readRDS("TF_annotation.rds")
+tfAnnot <- tfAnnot[,unique(colnames(tfAnnot))]
+icmAnnotDt <- merge(icmDt, 
+                    tfAnnot, by.x=c("gene"), by.y=c("TF"), 
+                    all.x=TRUE, all.y=FALSE)
+icmAnnotDt[,median_total_ic:=median(IC_sum), by=customClass]
+setorder(icmAnnotDt, median_total_ic)
+icmAnnotDt[,customClass:=factor(customClass, levels=unique(icmAnnotDt$customClass), 
+                          ordered=TRUE)]
+setorder(icmAnnotDt, class)
+icmAnnotDt[,n_class:=.N, by=class]
+icmAnnotSubDt <- subset(icmAnnotDt, n_class>8 & !is.na(class))
+pf1 <- ggplot(icmAnnotSubDt, aes(y=class, x=IC_sum))+
+  geom_boxplot(fill="lightgray", alpha=0.2)+
+  xlab("Total IC (Bits)")+
+  ylab("TF Family")+
+  #scale_x_discrete(guide = guide_axis(n.dodge=4))+
+  theme_minimal()
+pf2 <- ggplot(icmAnnotSubDt, aes(y=class, x=motif_length))+
+  geom_boxplot(fill="lightgray", alpha=0.2)+
+  xlab("Motif length")+
+  ylab("TF Family")+
+  #scale_x_discrete(guide = guide_axis(n.dodge=4))+
+  theme_minimal()+
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()) 
+pf1 | pf2 + plot_layout(ncol = 2, widths=c(1,0.1))
+
+#theme(axis.text.x=element_text(angle=60, hjust=1))
+ggsave("ic_family.png", width=24, height=10, units="cm")
+ggsave("ic_family.svg", width=24, height=10, units="cm")
+
+ggplot(icmAnnotSubDt, aes(x=motif_length, y=IC_sum))+
+  geom_point(size=0.1)+
+  geom_density2d()+
+  facet_wrap(~class, nrow=3, ncol=5, scales="free")+
+  ylab("Total IC (Bits)")+
+  xlab("Motif length")+
+  theme_minimal()+
+  theme(axis.text.x=element_text(angle=60, hjust=1))
+
+library(ggExtra)
+p <- ggplot(icmAnnotSubDt, aes(x = motif_length, y = IC_sum, color = class)) +
+  geom_point(alpha = 0.3) + theme_minimal()
+ggMarginal(p, type = "density", groupColour = TRUE, groupFill = TRUE)
+```
+
+# JASPAR
+
+```{r}
+library(JASPAR2024)
+library(RSQLite)
+JASPAR2024 <- JASPAR2024()
+
+
+JASPARConnect <- RSQLite::dbConnect(RSQLite::SQLite(), db(JASPAR2024))
+jasparMotifs <- RSQLite::dbGetQuery(JASPARConnect, 'SELECT * FROM MATRIX')
+jasparMotDt <- as.data.table(jasparMotifs)
+dbDisconnect(JASPARConnect)
+
+jasparMotDt <- subset(jasparMotDt, COLLECTION=="CORE")
+jasparMotDt <- unique(jasparMotDt, by=c("ID", "BASE_ID"))
+```
+
+```{r}
+# r
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(purrr)
+
+base <- "https://jaspar.genereg.net/api/v1/matrix/"
+
+fetch_detail <- function(id) {
+  url <- paste0(base, id, "/")
+  tryCatch({
+    res <- GET(url)
+    meta <- fromJSON(httr::content(res, as = "text", encoding = "UTF-8"), flatten = TRUE)
+    meta <- as.data.table(meta)
+  }, error = function(e) {
+    warning("failed ", id, ": ", conditionMessage(e))
+    NULL
+  })
+}
+metaDt <- map(unique(jasparMotDt$BASE_ID), fetch_detail)
+metaDt <- rbindlist(metaDt, fill=TRUE, use.names=TRUE)
+metaDt <- subset(metaDt, species.name=="Homo sapiens")
+nrow(metaDt)
+metaDt
+length(unique(metaDt$name))
+```
+
